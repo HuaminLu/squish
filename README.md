@@ -26,6 +26,20 @@ Quick run-through:
 3. Optionally change **Save to** (defaults to your Downloads; the **Use Downloads** button brings it back).
 4. **Squish It**. A 2-minute 1080p phone video takes about 15 s on a laptop, about 100 s on a phone.
 
+## Screenshots
+
+**Windows**
+
+| Choose | Picked | Squishing | Done |
+|---|---|---|---|
+| ![idle](docs/screenshots/windows-1-idle.png) | ![picked](docs/screenshots/windows-2-picked.png) | ![working](docs/screenshots/windows-3-working.png) | ![done](docs/screenshots/windows-4-done.png) |
+
+**Android**
+
+| Choose | Picked | Squishing | Done |
+|---|---|---|---|
+| ![idle](docs/screenshots/android-1-idle.png) | ![picked](docs/screenshots/android-2-picked.png) | ![working](docs/screenshots/android-3-working.png) | ![done](docs/screenshots/android-4-done.png) |
+
 ## How it compresses
 
 The recipe was reverse-engineered from [8mb.video](https://8mb.video)'s output and then improved:

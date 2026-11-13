@@ -121,10 +121,16 @@ async def main(page: ft.Page):
         animate=ft.Animation(300, ft.AnimationCurve.EASE_OUT_CUBIC),
     )
 
+    thumb_ctl = {"img": None, "bytes": None}
+
     def thumb_image():
+        # One Image control per thumbnail, reused across re-renders so it is not reloaded every progress tick.
         if state["thumb"]:
-            return ft.Image(src=state["thumb"], fit=ft.BoxFit.COVER, expand=True,
-                            fade_in_animation=ft.Animation(300))
+            if thumb_ctl["bytes"] is not state["thumb"]:
+                thumb_ctl["bytes"] = state["thumb"]
+                thumb_ctl["img"] = ft.Image(src=state["thumb"], fit=ft.BoxFit.COVER, expand=True,
+                                            fade_in_animation=ft.Animation(300))
+            return thumb_ctl["img"]
         return ft.Container(bgcolor=PANEL, expand=True)
 
     def scrim(alpha: float = 0.0):
@@ -460,11 +466,58 @@ async def main(page: ft.Page):
             caps("Save to"), folder_row,
             go_btn,
         ]))
-    page.add(ft.Column([title_bar, body], spacing=0, expand=True))
+    shots_mode = "--shots" in sys.argv
+    root = ft.Screenshot(content=ft.Container(
+        bgcolor=BLACK, expand=not shots_mode,
+        width=400 if shots_mode else None, height=470 if shots_mode else None,
+        content=ft.Column([title_bar, body], spacing=0, expand=True)))
+    page.add(root)
 
     # Preload a file given on the command line (also lets "Open with" work).
-    if len(sys.argv) > 1 and os.path.isfile(sys.argv[1]):
-        page.run_task(load_video, sys.argv[1])
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    if args and os.path.isfile(args[0]) and "--shots" not in sys.argv and "--auto" not in sys.argv:
+        page.run_task(load_video, args[0])
+
+    # Hidden: `squish_app.py <video> --shots DIR` renders idle/picked/working/done PNGs (no OS capture needed).
+    if "--shots" in sys.argv:
+        out_dir = sys.argv[sys.argv.index("--shots") + 1]
+
+        async def snap(name):
+            await asyncio.sleep(0.6)
+            data = await root.capture(pixel_ratio=2.0)
+            with open(os.path.join(out_dir, name), "wb") as f:
+                f.write(data)
+
+        async def shots():
+            os.makedirs(out_dir, exist_ok=True)
+            await asyncio.sleep(1.0)
+            await snap("windows-1-idle.png")
+            await load_video(args[0])
+            await snap("windows-2-picked.png")
+            task = page.run_task(go)
+            for _ in range(60):
+                await asyncio.sleep(0.5)
+                if state["phase"] == "working" and 0.15 < state["progress"].fraction < 0.4:
+                    break
+            await snap("windows-3-working.png")
+            await task
+            await snap("windows-4-done.png")
+            print("SHOTS_DONE", flush=True)
+            await page.window.close()
+        page.run_task(shots)
+
+    # Hidden self-test: `squish_app.py <video> --auto [--mb N]` squishes it and prints the result.
+    if "--auto" in sys.argv:
+        async def auto():
+            if "--mb" in sys.argv:
+                custom_field.value = sys.argv[sys.argv.index("--mb") + 1]
+                state["custom"] = True
+            await load_video(args[0])
+            await go()
+            print("AUTO_RESULT", json.dumps({"phase": state["phase"], "error": state["error"],
+                  "result": None if not state["result"] else [state["result"][0], state["result"][1], round(state["result"][3], 1)]}), flush=True)
+            await page.window.close()
+        page.run_task(auto)
     render_all()
 
 
