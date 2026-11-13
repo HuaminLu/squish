@@ -21,22 +21,26 @@ lands in your Downloads folder with `-10mb` (or whatever you chose) added to the
 
 Quick run-through:
 
-1. Click the big box to choose a video (any size, any format).
-2. Pick 5 / 8 / 10 / 20 MB, or type a custom number.
-3. Optionally change **Save to** (defaults to your Downloads; the **Use Downloads** button brings it back).
-4. **Squish It**. A 2-minute 1080p phone video takes about 15 s on a laptop, about 100 s on a phone.
+1. Click the big box to choose a video (any size, any format), or tap one in the **Recent** strip.
+2. Optional **Edit**: speed (0.25x to 4x, audio pitch-corrected), trim (drag the two handles), crop
+   (16:9, 1:1, 9:16, 4:3, centred). The preview updates and the size math uses the edited length.
+3. Pick 5 / 8 / 10 / 20 MB, or type a custom number.
+4. Optionally change **Save to** (defaults to your Downloads; the **Use Downloads** button brings it back).
+5. **Squish It**. A 2-minute 1080p phone video takes about 15 s on a laptop, about 100 s on a phone.
+
+The output name says what was done, e.g. `clip-8mb-2x-cut-1x1.mp4`.
 
 ## Screenshots
 
 **Windows**
 
-| Choose | Picked | Squishing | Done |
+| Choose | Edited | Squishing | Done |
 |---|---|---|---|
 | ![idle](docs/screenshots/windows-1-idle.png) | ![picked](docs/screenshots/windows-2-picked.png) | ![working](docs/screenshots/windows-3-working.png) | ![done](docs/screenshots/windows-4-done.png) |
 
 **Android**
 
-| Choose | Picked | Squishing | Done |
+| Choose | Edited | Squishing | Done |
 |---|---|---|---|
 | ![idle](docs/screenshots/android-1-idle.png) | ![picked](docs/screenshots/android-2-picked.png) | ![working](docs/screenshots/android-3-working.png) | ![done](docs/screenshots/android-4-done.png) |
 
@@ -50,6 +54,7 @@ The recipe was reverse-engineered from [8mb.video](https://8mb.video)'s output a
 3. Video gets the rest. Resolution is the largest of 2160 / 1440 / 1080 / 720 / 540 / 480 / 360 / 240 that still
    receives at least 0.035 bits per pixel, so a 1080p clip squished to 20 MB becomes 720p, to 10 MB becomes 540p.
 4. Two-pass x264 (not the single pass the website uses), MP4 with `faststart` so Discord previews instantly.
+5. Edits are plain ffmpeg filters: `crop`, `setpts` + `atempo` for speed, and `-ss`/`-t` as input options for trim.
 
 The engine is `desktop/squish_core.py` on Windows and `android_app/lib/plan.dart` + `engine.dart` on Android.
 Keep them in sync when changing the recipe.

@@ -15,8 +15,10 @@ import squish_core as core
 WHITE, BLACK, GREY, LINE, PANEL = "#FFFFFF", "#000000", "#9A9A9A", "#3A3A3A", "#000000"
 HOVER = "#1AFFFFFF"
 R, RS = 12, 8
-VERSION = "1.0"
+VERSION = "1.1"
 PRESETS = [5, 8, 10, 20]
+WIN_W, WIN_H = 400, 700
+SPEEDS = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0]
 
 
 def settings_path() -> str:
@@ -47,6 +49,10 @@ def downloads_dir() -> str:
     return d if os.path.isdir(d) else os.path.expanduser("~")
 
 
+def videos_dir() -> str:
+    return os.path.join(os.path.expanduser("~"), "Videos")
+
+
 def fmt_dur(s: float) -> str:
     s = int(s)
     return f"{s // 60}:{s % 60:02d}" if s >= 60 else f"{s}s"
@@ -58,7 +64,7 @@ async def main(page: ft.Page):
     page.padding = 0
     page.theme_mode = ft.ThemeMode.DARK
     w = page.window
-    w.width, w.height = 400, 470
+    w.width, w.height = WIN_W, WIN_H
     w.resizable = False
     w.maximizable = False
     w.title_bar_hidden = True
@@ -75,11 +81,11 @@ async def main(page: ft.Page):
 
     st = load_settings()
     state = {
-        "src": None, "info": None, "thumb": None,
+        "src": None, "info": None, "thumb": None, "edit": core.Edit(),
         "preset": float(st.get("preset", 10)), "custom": bool(st.get("custom", False)),
         "out_dir": st.get("out_dir") or downloads_dir(),
         "phase": "idle", "job": None, "result": None, "error": None,
-        "progress": core.Progress("", 0.0, 0.0),
+        "progress": core.Progress("", 0.0, 0.0), "thumb_req": 0,
     }
 
     picker = ft.FilePicker()
@@ -128,8 +134,9 @@ async def main(page: ft.Page):
         if state["thumb"]:
             if thumb_ctl["bytes"] is not state["thumb"]:
                 thumb_ctl["bytes"] = state["thumb"]
-                thumb_ctl["img"] = ft.Image(src=state["thumb"], fit=ft.BoxFit.COVER, expand=True,
-                                            fade_in_animation=ft.Animation(300))
+                thumb_ctl["img"] = ft.Container(
+                    expand=True, alignment=ft.Alignment.CENTER,
+                    content=ft.Image(src=state["thumb"], fit=ft.BoxFit.CONTAIN, fade_in_animation=ft.Animation(300)))
             return thumb_ctl["img"]
         return ft.Container(bgcolor=PANEL, expand=True)
 
@@ -140,6 +147,22 @@ async def main(page: ft.Page):
                 begin=ft.Alignment.TOP_CENTER, end=ft.Alignment.BOTTOM_CENTER,
                 colors=["#55000000", f"#{int(alpha * 255):02x}000000", "#dd000000"]),
         )
+
+    def edit_summary() -> str:
+        i, ed = state["info"], state["edit"]
+        if i is None:
+            return ""
+        parts = []
+        if abs(ed.speed - 1) > 1e-6:
+            parts.append(f"{ed.speed:g}×")
+        if ed.trimmed(i.duration):
+            s, e = ed.span(i.duration)
+            parts.append(f"{core.fmt_time(s)}–{core.fmt_time(e)}")
+        if ed.crop:
+            parts.append(ed.crop)
+        s, e = ed.span(i.duration)
+        out = (e - s) / ed.speed
+        return (" · ".join(parts) + f" → {fmt_dur(out)}") if parts else ""
 
     def render_card():
         ph = state["phase"]
@@ -157,12 +180,13 @@ async def main(page: ft.Page):
             i = state["info"]
             meta = "Reading…" if i is None else \
                 f"{i.width}×{i.height} · {fmt_dur(i.duration)} · {core.fmt_mb(os.path.getsize(state['src']))}"
+            es = edit_summary()
             card_body.content = ft.Stack(expand=True, controls=[
                 thumb_image(), scrim(0.13),
                 ft.Container(left=12, right=12, bottom=10, content=ft.Column(spacing=2, tight=True, controls=[
                     ft.Text(os.path.basename(state["src"]), size=14, weight=ft.FontWeight.W_700,
                             max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
-                    ft.Text(meta, size=12, color=GREY),
+                    ft.Text(meta + (f"   ✂ {es}" if es else ""), size=12, color=GREY),
                 ])),
                 ft.Container(top=8, right=8, content=round_icon(ft.Icons.SWAP_HORIZ_ROUNDED, 30, 16, True)),
             ])
@@ -193,8 +217,8 @@ async def main(page: ft.Page):
             dst, size, plan, secs = state["result"]
             src_size = os.path.getsize(state["src"])
             ratio = src_size / size if size else 0
-            detail = " · ".join([f"{plan.out_height}p" if plan.out_height else "same size",
-                                 f"{plan.video_kbps} kbps", f"{secs:.0f}s",
+            res = f"{plan.out_height}p" if plan.out_height else (f"{plan.crop_w}×{plan.crop_h}" if plan.crop_w else "same size")
+            detail = " · ".join([res, f"{plan.video_kbps} kbps", fmt_dur(plan.out_duration), f"{secs:.0f}s",
                                  f"{ratio:.1f}× smaller"])
             card_body.content = ft.Stack(expand=True, controls=[
                 thumb_image(), scrim(0.13),
@@ -228,12 +252,153 @@ async def main(page: ft.Page):
         if os.name == "nt":
             os.system(f'explorer /select,"{os.path.normpath(path)}"')
 
+    # ---------------- recent strip ----------------
+    recent_row = ft.Row(scroll=ft.ScrollMode.AUTO, spacing=6, controls=[], height=54)
+    recent_wrap = ft.Container(content=recent_row, height=54)
+
+    def recent_item(path: str, img: bytes):
+        return ft.Container(
+            width=92, height=52, border_radius=6, clip_behavior=ft.ClipBehavior.ANTI_ALIAS, ink=True,
+            border=ft.Border.all(1, LINE), tooltip=os.path.basename(path), bgcolor="#111111",
+            content=ft.Image(src=img, fit=ft.BoxFit.COVER, width=92, height=52),
+            on_click=lambda e, p=path: page.run_task(load_video, p),
+        )
+
+    async def refresh_recent():
+        folders = [state["out_dir"], downloads_dir(), videos_dir()]
+        paths = await asyncio.to_thread(core.recent_videos, folders, 24)
+        recent_row.controls.clear()
+        if not paths:
+            recent_row.controls.append(ft.Text("No videos in Downloads or Videos yet", size=11, color=GREY))
+        page.update()
+        for p in paths:
+            tp = await asyncio.to_thread(core.cached_thumb, p, 104)
+            if not tp:
+                continue
+            try:
+                with open(tp, "rb") as f:
+                    img = f.read()
+            except OSError:
+                continue
+            recent_row.controls.append(recent_item(p, img))
+            page.update()
+
+    # ---------------- edit controls ----------------
+    def lbl(t):
+        return ft.Text(t, size=11, color=GREY, weight=ft.FontWeight.W_700, width=40)
+
+    speed_val = ft.Text("1×", size=12, weight=ft.FontWeight.W_800, width=46, text_align=ft.TextAlign.RIGHT)
+    speed_slider = ft.Slider(min=0, max=len(SPEEDS) - 1, divisions=len(SPEEDS) - 1, value=SPEEDS.index(1.0),
+                             expand=True, active_color=WHITE, inactive_color=LINE, thumb_color=WHITE,
+                             padding=ft.Padding.symmetric(horizontal=8))
+    trim_val = ft.Text("", size=11, weight=ft.FontWeight.W_700, width=84, text_align=ft.TextAlign.RIGHT)
+    trim_slider = ft.RangeSlider(min=0, max=100, start_value=0, end_value=100, expand=True,
+                                 active_color=WHITE, inactive_color=LINE, round=1)
+    crop_chips: dict[str, ft.Container] = {}
+
+    def crop_chip(a: str):
+        c = ft.Container(
+            height=24, border_radius=6, padding=ft.Padding.symmetric(horizontal=9), ink=True,
+            alignment=ft.Alignment.CENTER, animate=ft.Animation(150),
+            content=ft.Text(a or "Off", size=11, weight=ft.FontWeight.W_800),
+            on_click=lambda e, a=a: set_crop(a),
+        )
+        crop_chips[a] = c
+        return c
+
+    def set_crop(a: str):
+        if state["phase"] == "working":
+            return
+        state["edit"].crop = a
+        render_all()
+        request_thumb()
+
+    def on_speed(e):
+        state["edit"].speed = SPEEDS[int(round(speed_slider.value))]
+        render_edit()
+        render_card()
+        render_button()
+        page.update()
+
+    def on_trim(e):
+        i = state["info"]
+        if i is None:
+            return
+        s, en = float(trim_slider.start_value), float(trim_slider.end_value)
+        if en - s < 0.5:
+            en = min(s + 0.5, i.duration)
+        state["edit"].start, state["edit"].end = s, (0.0 if en >= i.duration - 0.05 else en)
+        render_edit()
+        render_card()
+        page.update()
+
+    def on_trim_end(e):
+        on_trim(e)
+        request_thumb()
+
+    speed_slider.on_change = on_speed
+    trim_slider.on_change = on_trim
+    trim_slider.on_change_end = on_trim_end
+
+    def render_edit():
+        i, ed = state["info"], state["edit"]
+        enabled = i is not None and state["phase"] != "working"
+        speed_slider.disabled = trim_slider.disabled = not enabled
+        speed_slider.value = SPEEDS.index(ed.speed) if ed.speed in SPEEDS else SPEEDS.index(1.0)
+        speed_val.value = f"{ed.speed:g}×"
+        if i is not None:
+            trim_slider.max = max(i.duration, 1)
+            s, e = ed.span(i.duration)
+            trim_slider.start_value, trim_slider.end_value = s, e
+            trim_val.value = f"{core.fmt_time(s)} – {core.fmt_time(e)}"
+            trim_slider.divisions = max(int(i.duration * 2), 1)
+        else:
+            trim_slider.max, trim_slider.start_value, trim_slider.end_value = 100, 0, 100
+            trim_val.value = ""
+        for a, c in crop_chips.items():
+            sel = (ed.crop == a)
+            c.bgcolor = WHITE if sel else BLACK
+            c.border = ft.Border.all(1, WHITE if sel else LINE)
+            c.content.color = BLACK if sel else (WHITE if enabled else GREY)
+            c.disabled = not enabled
+
+    def request_thumb():
+        """Regenerate the preview for the current crop / trim start (debounced by request id)."""
+        state["thumb_req"] += 1
+        req = state["thumb_req"]
+
+        async def run():
+            await asyncio.sleep(0.15)
+            if req != state["thumb_req"] or not state["src"] or not state["info"]:
+                return
+            i, ed = state["info"], state["edit"]
+            s, _ = ed.span(i.duration)
+            at = s + min(max((i.duration - s) * 0.1, 0.0), 3.0) if s <= 0.05 else s
+            tp = os.path.join(tempfile.gettempdir(), f"squish_thumb_{int(time.time()*1000)}.jpg")
+            ok = await asyncio.to_thread(core.Job().thumbnail, state["src"], at, tp, ed.crop, (i.width, i.height), 720)
+            if ok and req == state["thumb_req"]:
+                with open(tp, "rb") as f:
+                    state["thumb"] = f.read()
+                render_card()
+                page.update()
+            try:
+                os.remove(tp)
+            except OSError:
+                pass
+        page.run_task(run)
+
+    edit_block = ft.Column(spacing=0, controls=[
+        ft.Row(spacing=4, controls=[lbl("Speed"), speed_slider, speed_val], height=30),
+        ft.Row(spacing=4, controls=[lbl("Trim"), trim_slider, trim_val], height=30),
+        ft.Row(spacing=6, controls=[lbl("Crop")] + [crop_chip(a) for a in core.CROPS], height=28),
+    ])
+
     # ---------------- presets ----------------
     tiles: dict[float, ft.Container] = {}
 
     def tile(mb: float):
         c = ft.Container(
-            expand=True, height=40, border_radius=RS, alignment=ft.Alignment.CENTER, ink=True,
+            expand=True, height=38, border_radius=RS, alignment=ft.Alignment.CENTER, ink=True,
             animate=ft.Animation(220, ft.AnimationCurve.EASE_OUT_CUBIC),
             on_click=lambda e, m=mb: select_preset(m),
             content=ft.Row(alignment=ft.MainAxisAlignment.CENTER, vertical_alignment=ft.CrossAxisAlignment.END,
@@ -257,7 +422,7 @@ async def main(page: ft.Page):
     )
     custom_unit = ft.Text("MB", size=10, weight=ft.FontWeight.W_700)
     custom_tile = ft.Container(
-        height=36, border_radius=RS, ink=True, animate=ft.Animation(220, ft.AnimationCurve.EASE_OUT_CUBIC),
+        height=34, border_radius=RS, ink=True, animate=ft.Animation(220, ft.AnimationCurve.EASE_OUT_CUBIC),
         padding=ft.Padding.symmetric(horizontal=12), on_click=lambda e: select_custom(focus=True),
         content=ft.Row(controls=[custom_check, ft.Container(width=4), custom_label,
                                  ft.Container(expand=True), custom_field, custom_unit]),
@@ -305,7 +470,7 @@ async def main(page: ft.Page):
         bgcolor=WHITE, border_radius=RS, padding=ft.Padding.symmetric(horizontal=10, vertical=5), ink=True,
         tooltip="Save to Downloads again", on_click=lambda e: reset_folder(), margin=ft.Margin.only(right=4))
     folder_row = ft.Container(
-        height=36, border_radius=RS, border=ft.Border.all(1, LINE), ink=True,
+        height=34, border_radius=RS, border=ft.Border.all(1, LINE), ink=True,
         padding=ft.Padding.only(left=10, right=4), on_click=lambda e: page.run_task(pick_folder),
         content=ft.Row(controls=[
             ft.Icon(ft.Icons.FOLDER_ROUNDED, size=15, color=WHITE), ft.Container(width=0),
@@ -322,6 +487,7 @@ async def main(page: ft.Page):
         state["out_dir"] = downloads_dir()
         persist()
         render_all()
+        page.run_task(refresh_recent)
 
     async def pick_folder():
         if state["phase"] == "working":
@@ -331,6 +497,7 @@ async def main(page: ft.Page):
             state["out_dir"] = d
             persist()
             render_all()
+            await refresh_recent()
 
     # ---------------- big button ----------------
     go_label = ft.Text("Squish It", size=15, weight=ft.FontWeight.W_700)
@@ -352,6 +519,7 @@ async def main(page: ft.Page):
 
     def render_all():
         render_card()
+        render_edit()
         render_presets()
         render_folder()
         render_button()
@@ -369,12 +537,15 @@ async def main(page: ft.Page):
         await load_video(files[0].path)
 
     async def load_video(path: str):
-        state.update(src=path, info=None, thumb=None, result=None, error=None, phase="picked")
+        if state["phase"] == "working":
+            return
+        state.update(src=path, info=None, thumb=None, result=None, error=None, phase="picked", edit=core.Edit())
         render_all()
         try:
             info = await asyncio.to_thread(core.probe, state["src"])
             tp = os.path.join(tempfile.gettempdir(), f"squish_thumb_{int(time.time()*1000)}.jpg")
-            ok = await asyncio.to_thread(core.Job().thumbnail, state["src"], info.duration, tp)
+            at = min(max(info.duration * 0.1, 0), 3)
+            ok = await asyncio.to_thread(core.Job().thumbnail, state["src"], at, tp, "", None, 720)
             thumb = None
             if ok:
                 with open(tp, "rb") as f:
@@ -413,7 +584,7 @@ async def main(page: ft.Page):
 
         try:
             res = await asyncio.to_thread(job.squish, state["src"], state["info"], target_mb(),
-                                          state["out_dir"], on_progress)
+                                          state["out_dir"], on_progress, state["edit"])
             state.update(result=res, phase="done")
         except core.Cancelled:
             state["phase"] = "picked"
@@ -421,6 +592,8 @@ async def main(page: ft.Page):
             state.update(error=str(ex), phase="error")
         state["job"] = None
         render_all()
+        if state["phase"] == "done":
+            await refresh_recent()
 
     card.on_click = lambda e: page.run_task(pick_video)
 
@@ -458,8 +631,10 @@ async def main(page: ft.Page):
         border=ft.Border.only(bottom=ft.BorderSide(1, LINE)),
     )
     body = ft.Container(expand=True, padding=ft.Padding.only(left=10, right=10, top=8, bottom=10), content=ft.Column(
-        expand=True, spacing=6, controls=[
+        expand=True, spacing=5, controls=[
             card,
+            caps("Recent"), recent_wrap,
+            caps("Edit"), edit_block,
             caps("Size limit"),
             ft.Row(spacing=6, controls=[tile(float(m)) for m in PRESETS]),
             custom_tile,
@@ -469,14 +644,25 @@ async def main(page: ft.Page):
     shots_mode = "--shots" in sys.argv
     root = ft.Screenshot(content=ft.Container(
         bgcolor=BLACK, expand=not shots_mode,
-        width=400 if shots_mode else None, height=470 if shots_mode else None,
+        width=WIN_W if shots_mode else None, height=WIN_H if shots_mode else None,
         content=ft.Column([title_bar, body], spacing=0, expand=True)))
     page.add(root)
+    page.run_task(refresh_recent)
 
     # Preload a file given on the command line (also lets "Open with" work).
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     if args and os.path.isfile(args[0]) and "--shots" not in sys.argv and "--auto" not in sys.argv:
         page.run_task(load_video, args[0])
+
+    def apply_cli_edit():
+        ed = state["edit"]
+        if "--speed" in sys.argv:
+            ed.speed = float(sys.argv[sys.argv.index("--speed") + 1])
+        if "--trim" in sys.argv:
+            a, b = sys.argv[sys.argv.index("--trim") + 1].split("-")
+            ed.start, ed.end = float(a), float(b)
+        if "--crop" in sys.argv:
+            ed.crop = sys.argv[sys.argv.index("--crop") + 1]
 
     # Hidden: `squish_app.py <video> --shots DIR` renders idle/picked/working/done PNGs (no OS capture needed).
     if "--shots" in sys.argv:
@@ -490,9 +676,13 @@ async def main(page: ft.Page):
 
         async def shots():
             os.makedirs(out_dir, exist_ok=True)
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(2.5)
             await snap("windows-1-idle.png")
             await load_video(args[0])
+            apply_cli_edit()
+            render_all()
+            request_thumb()
+            await asyncio.sleep(1.5)
             await snap("windows-2-picked.png")
             task = page.run_task(go)
             for _ in range(60):
@@ -501,18 +691,20 @@ async def main(page: ft.Page):
                     break
             await snap("windows-3-working.png")
             await task
+            await asyncio.sleep(1.0)
             await snap("windows-4-done.png")
             print("SHOTS_DONE", flush=True)
             await page.window.close()
         page.run_task(shots)
 
-    # Hidden self-test: `squish_app.py <video> --auto [--mb N]` squishes it and prints the result.
+    # Hidden self-test: `squish_app.py <video> --auto [--mb N] [--speed S] [--trim A-B] [--crop 16:9]`.
     if "--auto" in sys.argv:
         async def auto():
             if "--mb" in sys.argv:
                 custom_field.value = sys.argv[sys.argv.index("--mb") + 1]
                 state["custom"] = True
             await load_video(args[0])
+            apply_cli_edit()
             await go()
             print("AUTO_RESULT", json.dumps({"phase": state["phase"], "error": state["error"],
                   "result": None if not state["result"] else [state["result"][0], state["result"][1], round(state["result"][3], 1)]}), flush=True)

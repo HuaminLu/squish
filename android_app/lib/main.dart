@@ -74,6 +74,10 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
   Progress progress = const Progress('', 0, 0);
   SquishResult? result;
   String? error;
+  Edit edit = Edit();
+  List<RecentVideo> recent = [];
+  bool mediaPerm = true;
+  int thumbReq = 0;
   late final AnimationController pulse =
       AnimationController(vsync: this, duration: const Duration(seconds: 2))
         ..repeat(reverse: true);
@@ -82,6 +86,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
   void initState() {
     super.initState();
     _loadPrefs();
+    _loadRecent();
     customFocus.addListener(() {
       if (customFocus.hasFocus) setState(() => custom = true);
     });
@@ -136,20 +141,28 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
     HapticFeedback.selectionClick();
     final r = await Engine.pickVideo();
     if (r == null) return;
+    await _load(r['uri'] as String, r['name'] as String,
+        (r['size'] as num).toInt());
+  }
+
+  Future<void> _load(String u, String name, int size) async {
+    if (phase == Phase.working) return;
     setState(() {
-      uri = r['uri'] as String;
-      fileName = r['name'] as String;
-      fileSize = (r['size'] as num).toInt();
+      uri = u;
+      fileName = name;
+      fileSize = size;
       thumb = null;
       info = null;
       result = null;
       error = null;
+      edit = Edit();
       phase = Phase.picked;
     });
     try {
-      final i = await Engine.probe(uri!);
-      final t = await Engine.thumbnail(uri!, i.duration);
-      if (!mounted) return;
+      final i = await Engine.probe(u);
+      final at = (i.duration * 0.1).clamp(0.0, 3.0);
+      final t = await Engine.thumbnail(u, at);
+      if (!mounted || uri != u) return;
       setState(() {
         info = i;
         thumb = t;
@@ -161,6 +174,43 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
         phase = Phase.error;
       });
     }
+  }
+
+  /// Regenerate the preview for the current crop / trim start (debounced).
+  void _requestThumb() {
+    final req = ++thumbReq;
+    Future.delayed(const Duration(milliseconds: 200), () async {
+      if (req != thumbReq || uri == null || info == null) return;
+      final i = info!;
+      final (s, _) = edit.span(i.duration);
+      final at = s <= 0.05 ? ((i.duration - s) * 0.1).clamp(0.0, 3.0) : s;
+      final t = await Engine.thumbnail(uri!, at,
+          crop: edit.crop, srcW: i.width, srcH: i.height);
+      if (!mounted || req != thumbReq || t == null) return;
+      setState(() => thumb = t);
+    });
+  }
+
+  Future<void> _loadRecent() async {
+    final ok = await Engine.hasMediaPermission();
+    if (!mounted) return;
+    setState(() => mediaPerm = ok);
+    if (!ok) return;
+    final list = await Engine.recentVideos();
+    if (!mounted) return;
+    setState(() => recent = list);
+    for (final v in list) {
+      final t = await Engine.galleryThumb(v.uri);
+      if (!mounted) return;
+      setState(() => v.thumb = t);
+    }
+  }
+
+  Future<void> _askMediaPermission() async {
+    final ok = await Engine.requestMediaPermission();
+    if (!mounted) return;
+    setState(() => mediaPerm = ok);
+    if (ok) _loadRecent();
   }
 
   Future<void> _pickFolder() async {
@@ -216,6 +266,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
         src: info!,
         targetMb: targetMb,
         treeUri: treeUri,
+        edit: edit,
         onProgress: (p) {
           if (mounted) setState(() => progress = p);
         },
@@ -226,6 +277,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
         result = r;
         phase = Phase.done;
       });
+      _loadRecent();
     } on Cancelled {
       if (mounted) setState(() => phase = Phase.picked);
     } catch (e) {
@@ -252,13 +304,19 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
               _header(),
               const SizedBox(height: 10),
               Expanded(child: _sourceCard()),
-              const SizedBox(height: 12),
+              const SizedBox(height: 8),
+              _caps('Recent'),
+              _recentStrip(),
+              const SizedBox(height: 8),
+              _caps('Edit'),
+              _editBlock(),
+              const SizedBox(height: 8),
               _caps('Size limit'),
               _presets(),
-              const SizedBox(height: 12),
+              const SizedBox(height: 8),
               _caps('Save to'),
               _folderRow(),
-              const SizedBox(height: 12),
+              const SizedBox(height: 10),
               _bigButton(canGo, working),
             ],
           ),
@@ -363,7 +421,8 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
     if (thumb == null) {
       return Container(color: _panel);
     }
-    return Image.file(File(thumb!), fit: BoxFit.cover,
+    return Image.file(File(thumb!),
+        fit: edit.crop.isEmpty ? BoxFit.cover : BoxFit.contain,
         frameBuilder: (c, child, frame, sync) => AnimatedOpacity(
             opacity: frame == null ? 0 : 1,
             duration: const Duration(milliseconds: 300),
@@ -385,6 +444,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
     final meta = i == null
         ? 'Reading…'
         : '${i.width}×${i.height} · ${_fmtDur(i.duration)} · ${fmtMb(fileSize)}';
+    final es = _editSummary();
     return Stack(
       key: const ValueKey('picked'),
       fit: StackFit.expand,
@@ -405,6 +465,12 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
                       fontSize: 19, fontWeight: FontWeight.w700)),
               const SizedBox(height: 4),
               Text(meta, style: TextStyle(color: _grey, fontSize: 14)),
+              if (es.isNotEmpty)
+                Text('✂ $es',
+                    style: const TextStyle(
+                        color: _white,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600)),
             ],
           ),
         ),
@@ -497,8 +563,14 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
     final p = r.plan;
     final ratio = fileSize > 0 ? fileSize / r.bytes : 0;
     final detail = [
-      if (p.outHeight > 0) '${p.outHeight}p' else 'same size',
+      if (p.outHeight > 0)
+        '${p.outHeight}p'
+      else if (p.cropW > 0)
+        '${p.cropW}×${p.cropH}'
+      else
+        'same size',
       '${p.videoKbps} kbps',
+      _fmtDur(p.outDuration),
       '${r.elapsed.inSeconds}s',
       if (ratio > 1) '${ratio.toStringAsFixed(1)}× smaller',
     ].join(' · ');
@@ -615,7 +687,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 220),
         curve: Curves.easeOutCubic,
-        height: 68,
+        height: 58,
         decoration: BoxDecoration(
           color: sel ? _white : _black,
           borderRadius: BorderRadius.circular(_rs),
@@ -648,7 +720,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
     return AnimatedContainer(
       duration: const Duration(milliseconds: 220),
       curve: Curves.easeOutCubic,
-      height: 56,
+      height: 50,
       decoration: BoxDecoration(
         color: sel ? _white : _black,
         borderRadius: BorderRadius.circular(_rs),
@@ -727,7 +799,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
   // ---------- folder ----------
   Widget _folderRow() {
     return Container(
-      height: 54,
+      height: 50,
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(_rs),
         border: Border.all(color: _line, width: 1),
@@ -818,6 +890,211 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
             ),
           ),
         ),
+      ),
+    );
+  }
+
+  // ---------- recent strip ----------
+  Widget _recentStrip() {
+    if (!mediaPerm) {
+      return SizedBox(
+        height: 56,
+        child: Align(
+          alignment: Alignment.centerLeft,
+          child: GestureDetector(
+            onTap: _askMediaPermission,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(_rs),
+                  border: Border.all(color: _line)),
+              child: const Text('Allow access to show recent videos',
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+            ),
+          ),
+        ),
+      );
+    }
+    if (recent.isEmpty) {
+      return const SizedBox(
+        height: 56,
+        child: Align(
+          alignment: Alignment.centerLeft,
+          child: Text('No videos yet', style: TextStyle(color: _grey, fontSize: 13)),
+        ),
+      );
+    }
+    return SizedBox(
+      height: 56,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        itemCount: recent.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        itemBuilder: (c, k) {
+          final v = recent[k];
+          final sel = v.uri == uri;
+          return GestureDetector(
+            onTap: () => _load(v.uri, v.name, v.size),
+            child: Container(
+              width: 96,
+              decoration: BoxDecoration(
+                color: const Color(0xFF111111),
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: sel ? _white : _line, width: sel ? 1.5 : 1),
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: v.thumb == null
+                  ? const Icon(Icons.videocam_outlined, color: _grey, size: 20)
+                  : Image.file(File(v.thumb!), fit: BoxFit.cover),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  // ---------- edit block ----------
+  String _editSummary() {
+    final i = info;
+    if (i == null) return '';
+    final parts = <String>[];
+    if (edit.speedChanged) parts.add('${Edit.g(edit.speed)}×');
+    final (s, e) = edit.span(i.duration);
+    if (edit.trimmed(i.duration)) parts.add('${fmtTime(s)}–${fmtTime(e)}');
+    if (edit.crop.isNotEmpty) parts.add(edit.crop);
+    if (parts.isEmpty) return '';
+    return '${parts.join(' · ')} → ${_fmtDur(edit.outDuration(i.duration))}';
+  }
+
+  Widget _editLabel(String t) => SizedBox(
+        width: 48,
+        child: Text(t,
+            style: const TextStyle(
+                color: _grey, fontSize: 12, fontWeight: FontWeight.w700)),
+      );
+
+  Widget _editBlock() {
+    final i = info;
+    final enabled = i != null && phase != Phase.working;
+    final dur = i?.duration ?? 100.0;
+    final (s, e) = i == null ? (0.0, 100.0) : edit.span(dur);
+    final theme = SliderTheme.of(context).copyWith(
+      trackHeight: 3,
+      activeTrackColor: _white,
+      inactiveTrackColor: _line,
+      thumbColor: _white,
+      overlayColor: _white.withValues(alpha: 0.12),
+      thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8),
+      overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
+      rangeThumbShape: const RoundRangeSliderThumbShape(enabledThumbRadius: 8),
+      activeTickMarkColor: Colors.transparent,
+      inactiveTickMarkColor: Colors.transparent,
+      disabledActiveTrackColor: _line,
+      disabledInactiveTrackColor: _line,
+      disabledThumbColor: _grey,
+    );
+    return SliderTheme(
+      data: theme,
+      child: Column(
+        children: [
+          SizedBox(
+            height: 34,
+            child: Row(
+              children: [
+                _editLabel('Speed'),
+                Expanded(
+                  child: Slider(
+                    min: 0,
+                    max: (kSpeeds.length - 1).toDouble(),
+                    divisions: kSpeeds.length - 1,
+                    value: kSpeeds.indexOf(edit.speed).clamp(0, kSpeeds.length - 1).toDouble(),
+                    onChanged: enabled
+                        ? (v) => setState(() => edit.speed = kSpeeds[v.round()])
+                        : null,
+                  ),
+                ),
+                SizedBox(
+                  width: 44,
+                  child: Text('${Edit.g(edit.speed)}×',
+                      textAlign: TextAlign.right,
+                      style: const TextStyle(
+                          fontSize: 14, fontWeight: FontWeight.w800)),
+                ),
+              ],
+            ),
+          ),
+          SizedBox(
+            height: 34,
+            child: Row(
+              children: [
+                _editLabel('Trim'),
+                Expanded(
+                  child: RangeSlider(
+                    min: 0,
+                    max: dur,
+                    values: RangeValues(s, e),
+                    onChanged: enabled
+                        ? (v) => setState(() {
+                              var a = v.start, b = v.end;
+                              if (b - a < 0.5) b = (a + 0.5).clamp(0.0, dur);
+                              edit.start = a;
+                              edit.end = b >= dur - 0.05 ? 0 : b;
+                            })
+                        : null,
+                    onChangeEnd: enabled ? (_) => _requestThumb() : null,
+                  ),
+                ),
+                SizedBox(
+                  width: 92,
+                  child: Text(i == null ? '' : '${fmtTime(s)} – ${fmtTime(e)}',
+                      textAlign: TextAlign.right,
+                      style: const TextStyle(
+                          fontSize: 12, fontWeight: FontWeight.w700)),
+                ),
+              ],
+            ),
+          ),
+          SizedBox(
+            height: 30,
+            child: Row(
+              children: [
+                _editLabel('Crop'),
+                for (final a in kCrops) ...[
+                  _cropChip(a, enabled),
+                  const SizedBox(width: 6),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _cropChip(String a, bool enabled) {
+    final sel = edit.crop == a;
+    return GestureDetector(
+      onTap: enabled
+          ? () {
+              HapticFeedback.selectionClick();
+              setState(() => edit.crop = a);
+              _requestThumb();
+            }
+          : null,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(horizontal: 11),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: sel ? _white : _black,
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: sel ? _white : _line),
+        ),
+        child: Text(a.isEmpty ? 'Off' : a,
+            style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w800,
+                color: sel ? _black : (enabled ? _white : _grey))),
       ),
     );
   }

@@ -1,24 +1,44 @@
 package dev.squish.squish
 
+import android.Manifest
 import android.app.Activity
+import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.OpenableColumns
+import android.util.Size
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
+import java.io.FileOutputStream
+import java.util.concurrent.Executors
 
 class MainActivity : FlutterActivity() {
     private val channelName = "squish/files"
     private val reqVideo = 4101
     private val reqFolder = 4102
+    private val reqPerm = 4103
     private var pending: MethodChannel.Result? = null
+    private var pendingPerm: MethodChannel.Result? = null
+    private val pool = Executors.newSingleThreadExecutor()
+    private val main = Handler(Looper.getMainLooper())
+
+    private val mediaPermission: String
+        get() = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_VIDEO
+                else Manifest.permission.READ_EXTERNAL_STORAGE
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -66,8 +86,40 @@ class MainActivity : FlutterActivity() {
                     startActivity(Intent.createChooser(i, "Share video"))
                     result.success(null)
                 }
+                "hasMediaPermission" -> result.success(hasMediaPermission())
+                "requestMediaPermission" -> {
+                    if (hasMediaPermission()) { result.success(true); return@setMethodCallHandler }
+                    pendingPerm = result
+                    ActivityCompat.requestPermissions(this, arrayOf(mediaPermission), reqPerm)
+                }
+                "listRecentVideos" -> {
+                    val limit = call.argument<Int>("limit") ?: 24
+                    pool.execute {
+                        val list = try { listRecentVideos(limit) } catch (e: Exception) { emptyList<Map<String, Any>>() }
+                        main.post { result.success(list) }
+                    }
+                }
+                "videoThumb" -> {
+                    val uri = Uri.parse(call.argument<String>("uri")!!)
+                    pool.execute {
+                        val p = try { videoThumb(uri) } catch (e: Exception) { null }
+                        main.post { result.success(p) }
+                    }
+                }
                 else -> result.notImplemented()
             }
+        }
+    }
+
+    private fun hasMediaPermission(): Boolean =
+        ContextCompat.checkSelfPermission(this, mediaPermission) == PackageManager.PERMISSION_GRANTED
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == reqPerm) {
+            val ok = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
+            pendingPerm?.success(ok)
+            pendingPerm = null
         }
     }
 
@@ -99,6 +151,58 @@ class MainActivity : FlutterActivity() {
                 r.success(mapOf("uri" to uri.toString(), "name" to treeDisplayName(uri)))
             }
         }
+    }
+
+    /** Newest videos in the device gallery (MediaStore). */
+    private fun listRecentVideos(limit: Int): List<Map<String, Any>> {
+        if (!hasMediaPermission()) return emptyList()
+        val coll = MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        val proj = arrayOf(MediaStore.Video.Media._ID, MediaStore.Video.Media.DISPLAY_NAME,
+            MediaStore.Video.Media.SIZE, MediaStore.Video.Media.DATE_MODIFIED)
+        val out = ArrayList<Map<String, Any>>()
+        val cursor = if (Build.VERSION.SDK_INT >= 30) {
+            val args = Bundle().apply {
+                putStringArray(android.content.ContentResolver.QUERY_ARG_SORT_COLUMNS, arrayOf(MediaStore.Video.Media.DATE_MODIFIED))
+                putInt(android.content.ContentResolver.QUERY_ARG_SORT_DIRECTION, android.content.ContentResolver.QUERY_SORT_DIRECTION_DESCENDING)
+                putInt(android.content.ContentResolver.QUERY_ARG_LIMIT, limit)
+            }
+            contentResolver.query(coll, proj, args, null)
+        } else {
+            @Suppress("DEPRECATION")
+            contentResolver.query(coll, proj, null, null, "${MediaStore.Video.Media.DATE_MODIFIED} DESC LIMIT $limit")
+        }
+        cursor?.use { c ->
+            val idI = c.getColumnIndexOrThrow(MediaStore.Video.Media._ID)
+            val nI = c.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME)
+            val sI = c.getColumnIndexOrThrow(MediaStore.Video.Media.SIZE)
+            val dI = c.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_MODIFIED)
+            while (c.moveToNext() && out.size < limit) {
+                val id = c.getLong(idI)
+                out.add(mapOf(
+                    "uri" to ContentUris.withAppendedId(coll, id).toString(),
+                    "name" to (c.getString(nI) ?: "video"),
+                    "size" to c.getLong(sI),
+                    "date" to c.getLong(dI) * 1000L))
+            }
+        }
+        return out
+    }
+
+    /** Small gallery thumbnail, cached in the app cache dir. */
+    private fun videoThumb(uri: Uri): String? {
+        val dir = File(cacheDir, "gthumbs").apply { mkdirs() }
+        val f = File(dir, uri.toString().hashCode().toUInt().toString() + ".jpg")
+        if (f.exists()) return f.absolutePath
+        val bmp: Bitmap? = if (Build.VERSION.SDK_INT >= 29) {
+            contentResolver.loadThumbnail(uri, Size(320, 180), null)
+        } else {
+            @Suppress("DEPRECATION")
+            MediaStore.Video.Thumbnails.getThumbnail(contentResolver, ContentUris.parseId(uri),
+                MediaStore.Video.Thumbnails.MINI_KIND, null)
+        }
+        if (bmp == null) return null
+        FileOutputStream(f).use { bmp.compress(Bitmap.CompressFormat.JPEG, 80, it) }
+        return f.absolutePath
     }
 
     private fun treeDisplayName(tree: Uri): String {
