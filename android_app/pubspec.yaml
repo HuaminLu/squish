@@ -1,0 +1,24 @@
+name: squish
+description: Shrink videos to fit under a size limit, fully on-device.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.5.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  ffmpeg_kit_flutter_new: ^4.6.8
+  shared_preferences: ^2.5.6
+  path_provider: ^2.1.6
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/icon.png
