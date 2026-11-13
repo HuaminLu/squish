@@ -17,7 +17,7 @@ HOVER = "#1AFFFFFF"
 R, RS = 12, 8
 VERSION = "1.1"
 PRESETS = [5, 8, 10, 20]
-WIN_W, WIN_H = 400, 700
+WIN_W, WIN_H = 400, 640
 SPEEDS = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0]
 
 
@@ -77,6 +77,11 @@ async def main(page: ft.Page):
     page.theme = page.dark_theme = ft.Theme(
         font_family="Segoe UI",
         color_scheme=ft.ColorScheme(primary=WHITE, on_primary=BLACK, surface=BLACK, on_surface=WHITE, outline=WHITE),
+        slider_theme=ft.SliderTheme(
+            track_height=8, active_track_color=WHITE, inactive_track_color="#5A5A5A", thumb_color=WHITE,
+            overlay_color="#33FFFFFF", active_tick_mark_color="#00000000", inactive_tick_mark_color="#00000000",
+            disabled_active_track_color=LINE, disabled_inactive_track_color=LINE, disabled_thumb_color=GREY,
+        ),
     )
 
     st = load_settings()
@@ -252,48 +257,15 @@ async def main(page: ft.Page):
         if os.name == "nt":
             os.system(f'explorer /select,"{os.path.normpath(path)}"')
 
-    # ---------------- recent strip ----------------
-    recent_row = ft.Row(scroll=ft.ScrollMode.AUTO, spacing=6, controls=[], height=54)
-    recent_wrap = ft.Container(content=recent_row, height=54)
-
-    def recent_item(path: str, img: bytes):
-        return ft.Container(
-            width=92, height=52, border_radius=6, clip_behavior=ft.ClipBehavior.ANTI_ALIAS, ink=True,
-            border=ft.Border.all(1, LINE), tooltip=os.path.basename(path), bgcolor="#111111",
-            content=ft.Image(src=img, fit=ft.BoxFit.COVER, width=92, height=52),
-            on_click=lambda e, p=path: page.run_task(load_video, p),
-        )
-
-    async def refresh_recent():
-        folders = [state["out_dir"], downloads_dir(), videos_dir()]
-        paths = await asyncio.to_thread(core.recent_videos, folders, 24)
-        recent_row.controls.clear()
-        if not paths:
-            recent_row.controls.append(ft.Text("No videos in Downloads or Videos yet", size=11, color=GREY))
-        page.update()
-        for p in paths:
-            tp = await asyncio.to_thread(core.cached_thumb, p, 104)
-            if not tp:
-                continue
-            try:
-                with open(tp, "rb") as f:
-                    img = f.read()
-            except OSError:
-                continue
-            recent_row.controls.append(recent_item(p, img))
-            page.update()
-
     # ---------------- edit controls ----------------
     def lbl(t):
         return ft.Text(t, size=11, color=GREY, weight=ft.FontWeight.W_700, width=40)
 
     speed_val = ft.Text("1×", size=12, weight=ft.FontWeight.W_800, width=46, text_align=ft.TextAlign.RIGHT)
     speed_slider = ft.Slider(min=0, max=len(SPEEDS) - 1, divisions=len(SPEEDS) - 1, value=SPEEDS.index(1.0),
-                             expand=True, active_color=WHITE, inactive_color=LINE, thumb_color=WHITE,
-                             padding=ft.Padding.symmetric(horizontal=8))
+                             expand=True, padding=ft.Padding.symmetric(horizontal=8))
     trim_val = ft.Text("", size=11, weight=ft.FontWeight.W_700, width=84, text_align=ft.TextAlign.RIGHT)
-    trim_slider = ft.RangeSlider(min=0, max=100, start_value=0, end_value=100, expand=True,
-                                 active_color=WHITE, inactive_color=LINE, round=1)
+    trim_slider = ft.RangeSlider(min=0, max=100, start_value=0, end_value=100, expand=True, round=1)
     crop_chips: dict[str, ft.Container] = {}
 
     def crop_chip(a: str):
@@ -375,7 +347,7 @@ async def main(page: ft.Page):
             s, _ = ed.span(i.duration)
             at = s + min(max((i.duration - s) * 0.1, 0.0), 3.0) if s <= 0.05 else s
             tp = os.path.join(tempfile.gettempdir(), f"squish_thumb_{int(time.time()*1000)}.jpg")
-            ok = await asyncio.to_thread(core.Job().thumbnail, state["src"], at, tp, ed.crop, (i.width, i.height), 720)
+            ok = await asyncio.to_thread(core.Job().thumbnail, state["src"], at, tp, ed.crop, (i.width, i.height), 1080)
             if ok and req == state["thumb_req"]:
                 with open(tp, "rb") as f:
                     state["thumb"] = f.read()
@@ -388,8 +360,8 @@ async def main(page: ft.Page):
         page.run_task(run)
 
     edit_block = ft.Column(spacing=0, controls=[
-        ft.Row(spacing=4, controls=[lbl("Speed"), speed_slider, speed_val], height=30),
-        ft.Row(spacing=4, controls=[lbl("Trim"), trim_slider, trim_val], height=30),
+        ft.Row(spacing=4, controls=[lbl("Speed"), speed_slider, speed_val], height=36),
+        ft.Row(spacing=4, controls=[lbl("Trim"), trim_slider, trim_val], height=36),
         ft.Row(spacing=6, controls=[lbl("Crop")] + [crop_chip(a) for a in core.CROPS], height=28),
     ])
 
@@ -487,7 +459,6 @@ async def main(page: ft.Page):
         state["out_dir"] = downloads_dir()
         persist()
         render_all()
-        page.run_task(refresh_recent)
 
     async def pick_folder():
         if state["phase"] == "working":
@@ -497,7 +468,6 @@ async def main(page: ft.Page):
             state["out_dir"] = d
             persist()
             render_all()
-            await refresh_recent()
 
     # ---------------- big button ----------------
     go_label = ft.Text("Squish It", size=15, weight=ft.FontWeight.W_700)
@@ -592,8 +562,6 @@ async def main(page: ft.Page):
             state.update(error=str(ex), phase="error")
         state["job"] = None
         render_all()
-        if state["phase"] == "done":
-            await refresh_recent()
 
     card.on_click = lambda e: page.run_task(pick_video)
 
@@ -633,7 +601,6 @@ async def main(page: ft.Page):
     body = ft.Container(expand=True, padding=ft.Padding.only(left=10, right=10, top=8, bottom=10), content=ft.Column(
         expand=True, spacing=5, controls=[
             card,
-            caps("Recent"), recent_wrap,
             caps("Edit"), edit_block,
             caps("Size limit"),
             ft.Row(spacing=6, controls=[tile(float(m)) for m in PRESETS]),
@@ -647,7 +614,6 @@ async def main(page: ft.Page):
         width=WIN_W if shots_mode else None, height=WIN_H if shots_mode else None,
         content=ft.Column([title_bar, body], spacing=0, expand=True)))
     page.add(root)
-    page.run_task(refresh_recent)
 
     # Preload a file given on the command line (also lets "Open with" work).
     args = [a for a in sys.argv[1:] if not a.startswith("--")]

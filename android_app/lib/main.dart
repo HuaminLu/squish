@@ -75,8 +75,6 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
   SquishResult? result;
   String? error;
   Edit edit = Edit();
-  List<RecentVideo> recent = [];
-  bool mediaPerm = true;
   int thumbReq = 0;
   late final AnimationController pulse =
       AnimationController(vsync: this, duration: const Duration(seconds: 2))
@@ -86,7 +84,6 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
   void initState() {
     super.initState();
     _loadPrefs();
-    _loadRecent();
     customFocus.addListener(() {
       if (customFocus.hasFocus) setState(() => custom = true);
     });
@@ -191,28 +188,6 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
     });
   }
 
-  Future<void> _loadRecent() async {
-    final ok = await Engine.hasMediaPermission();
-    if (!mounted) return;
-    setState(() => mediaPerm = ok);
-    if (!ok) return;
-    final list = await Engine.recentVideos();
-    if (!mounted) return;
-    setState(() => recent = list);
-    for (final v in list) {
-      final t = await Engine.galleryThumb(v.uri);
-      if (!mounted) return;
-      setState(() => v.thumb = t);
-    }
-  }
-
-  Future<void> _askMediaPermission() async {
-    final ok = await Engine.requestMediaPermission();
-    if (!mounted) return;
-    setState(() => mediaPerm = ok);
-    if (ok) _loadRecent();
-  }
-
   Future<void> _pickFolder() async {
     if (phase == Phase.working) return;
     HapticFeedback.selectionClick();
@@ -277,7 +252,6 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
         result = r;
         phase = Phase.done;
       });
-      _loadRecent();
     } on Cancelled {
       if (mounted) setState(() => phase = Phase.picked);
     } catch (e) {
@@ -304,10 +278,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
               _header(),
               const SizedBox(height: 10),
               Expanded(child: _sourceCard()),
-              const SizedBox(height: 8),
-              _caps('Recent'),
-              _recentStrip(),
-              const SizedBox(height: 8),
+              const SizedBox(height: 10),
               _caps('Edit'),
               _editBlock(),
               const SizedBox(height: 8),
@@ -894,65 +865,6 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
     );
   }
 
-  // ---------- recent strip ----------
-  Widget _recentStrip() {
-    if (!mediaPerm) {
-      return SizedBox(
-        height: 56,
-        child: Align(
-          alignment: Alignment.centerLeft,
-          child: GestureDetector(
-            onTap: _askMediaPermission,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-              decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(_rs),
-                  border: Border.all(color: _line)),
-              child: const Text('Allow access to show recent videos',
-                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
-            ),
-          ),
-        ),
-      );
-    }
-    if (recent.isEmpty) {
-      return const SizedBox(
-        height: 56,
-        child: Align(
-          alignment: Alignment.centerLeft,
-          child: Text('No videos yet', style: TextStyle(color: _grey, fontSize: 13)),
-        ),
-      );
-    }
-    return SizedBox(
-      height: 56,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        itemCount: recent.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 8),
-        itemBuilder: (c, k) {
-          final v = recent[k];
-          final sel = v.uri == uri;
-          return GestureDetector(
-            onTap: () => _load(v.uri, v.name, v.size),
-            child: Container(
-              width: 96,
-              decoration: BoxDecoration(
-                color: const Color(0xFF111111),
-                borderRadius: BorderRadius.circular(6),
-                border: Border.all(color: sel ? _white : _line, width: sel ? 1.5 : 1),
-              ),
-              clipBehavior: Clip.antiAlias,
-              child: v.thumb == null
-                  ? const Icon(Icons.videocam_outlined, color: _grey, size: 20)
-                  : Image.file(File(v.thumb!), fit: BoxFit.cover),
-            ),
-          );
-        },
-      ),
-    );
-  }
-
   // ---------- edit block ----------
   String _editSummary() {
     final i = info;
@@ -979,14 +891,16 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
     final dur = i?.duration ?? 100.0;
     final (s, e) = i == null ? (0.0, 100.0) : edit.span(dur);
     final theme = SliderTheme.of(context).copyWith(
-      trackHeight: 3,
+      trackHeight: 8,
       activeTrackColor: _white,
-      inactiveTrackColor: _line,
+      inactiveTrackColor: const Color(0xFF5A5A5A),
       thumbColor: _white,
-      overlayColor: _white.withValues(alpha: 0.12),
-      thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8),
-      overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
-      rangeThumbShape: const RoundRangeSliderThumbShape(enabledThumbRadius: 8),
+      overlayColor: _white.withValues(alpha: 0.15),
+      thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 12),
+      overlayShape: const RoundSliderOverlayShape(overlayRadius: 20),
+      rangeThumbShape: const RoundRangeSliderThumbShape(enabledThumbRadius: 12),
+      rangeTrackShape: const RoundedRectRangeSliderTrackShape(),
+      trackShape: const RoundedRectSliderTrackShape(),
       activeTickMarkColor: Colors.transparent,
       inactiveTickMarkColor: Colors.transparent,
       disabledActiveTrackColor: _line,
@@ -998,7 +912,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
       child: Column(
         children: [
           SizedBox(
-            height: 34,
+            height: 40,
             child: Row(
               children: [
                 _editLabel('Speed'),
@@ -1024,7 +938,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
             ),
           ),
           SizedBox(
-            height: 34,
+            height: 40,
             child: Row(
               children: [
                 _editLabel('Trim'),

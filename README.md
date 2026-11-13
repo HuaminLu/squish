@@ -21,7 +21,7 @@ lands in your Downloads folder with `-10mb` (or whatever you chose) added to the
 
 Quick run-through:
 
-1. Click the big box to choose a video (any size, any format), or tap one in the **Recent** strip.
+1. Click the big box to choose a video (any size, any format).
 2. Optional **Edit**: speed (0.25x to 4x, audio pitch-corrected), trim (drag the two handles), crop
    (16:9, 1:1, 9:16, 4:3, centred). The preview updates and the size math uses the edited length.
 3. Pick 5 / 8 / 10 / 20 MB, or type a custom number.
@@ -34,13 +34,13 @@ The output name says what was done, e.g. `clip-8mb-2x-cut-1x1.mp4`.
 
 **Windows**
 
-| Choose | Edited | Squishing | Done |
+| Choose | Picked | Squishing | Done |
 |---|---|---|---|
 | ![idle](docs/screenshots/windows-1-idle.png) | ![picked](docs/screenshots/windows-2-picked.png) | ![working](docs/screenshots/windows-3-working.png) | ![done](docs/screenshots/windows-4-done.png) |
 
 **Android**
 
-| Choose | Edited | Squishing | Done |
+| Choose | Picked | Squishing | Done |
 |---|---|---|---|
 | ![idle](docs/screenshots/android-1-idle.png) | ![picked](docs/screenshots/android-2-picked.png) | ![working](docs/screenshots/android-3-working.png) | ![done](docs/screenshots/android-4-done.png) |
 

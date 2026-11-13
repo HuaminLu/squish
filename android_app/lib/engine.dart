@@ -29,15 +29,6 @@ class SquishResult {
       this.plan, this.elapsed);
 }
 
-class RecentVideo {
-  final String uri;
-  final String name;
-  final int size;
-  final int dateMs;
-  String? thumb;
-  RecentVideo(this.uri, this.name, this.size, this.dateMs);
-}
-
 class Engine {
   static const _ch = MethodChannel('squish/files');
   static bool _cancelled = false;
@@ -60,26 +51,6 @@ class Engine {
 
   static Future<void> share(String uri) =>
       _ch.invokeMethod('shareFile', {'uri': uri});
-
-  /// Recent videos from the device gallery (newest first). Empty if the
-  /// media permission was refused.
-  static Future<List<RecentVideo>> recentVideos({int limit = 24}) async {
-    final r = await _ch.invokeMethod<List>('listRecentVideos', {'limit': limit});
-    return (r ?? [])
-        .map((e) => (e as Map).cast<String, dynamic>())
-        .map((m) => RecentVideo(m['uri'] as String, m['name'] as String,
-            (m['size'] as num).toInt(), (m['date'] as num).toInt()))
-        .toList();
-  }
-
-  static Future<bool> hasMediaPermission() async =>
-      await _ch.invokeMethod<bool>('hasMediaPermission') ?? false;
-
-  static Future<bool> requestMediaPermission() async =>
-      await _ch.invokeMethod<bool>('requestMediaPermission') ?? false;
-
-  static Future<String?> galleryThumb(String uri) =>
-      _ch.invokeMethod<String>('videoThumb', {'uri': uri});
 
   static Future<void> cancel() async {
     _cancelled = true;
