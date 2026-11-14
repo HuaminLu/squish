@@ -1,5 +1,8 @@
 # Squish desktop UI — style guide (Flet 1.x)
 
+Runnable starter with every block below: [`flet_style_template.py`](flet_style_template.py)
+(`python docs/flet_style_template.py`). Copy its helper functions into a new app.
+
 A compact, single-screen, black-and-white desktop look. Everything fits in one fixed window, no
 scrolling, no sub-screens, no dropdowns. Copy this into any Flet app.
 
