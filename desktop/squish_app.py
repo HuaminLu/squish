@@ -446,9 +446,9 @@ async def main(page: ft.Page):
         ft.Container(height=4),
         ft.Row(spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER, height=32, controls=[
             lbl("Trim"), ft.Container(expand=True),
-            ft.Container(padding=ft.Padding.only(bottom=2), content=sub("Start")), trim_start_f,
+            sub("Start"), ft.Container(padding=ft.Padding.only(top=4), content=trim_start_f),
             ft.Container(width=6),
-            ft.Container(padding=ft.Padding.only(bottom=2), content=sub("End")), trim_end_f]),
+            sub("End"), ft.Container(padding=ft.Padding.only(top=4), content=trim_end_f)]),
         ft.Container(content=trim_slider, height=30, padding=ft.Padding.symmetric(horizontal=2)),
         ft.Container(height=4),
         ft.Row(spacing=6, controls=[lbl("Crop"), ft.Container(width=4)] + [crop_chip(a) for a in core.CROPS], height=28),
@@ -475,20 +475,21 @@ async def main(page: ft.Page):
                                 animate=ft.Animation(220), content=ft.Icon(ft.Icons.CHECK_ROUNDED, size=12))
     custom_label = ft.Text("Custom", size=13, weight=ft.FontWeight.W_700)
     custom_field = ft.TextField(
-        value=str(st.get("custom_value", "25")), width=56, height=30, text_align=ft.TextAlign.RIGHT, dense=True,
+        value=str(st.get("custom_value", "25")), width=56, height=36, text_align=ft.TextAlign.RIGHT, dense=True,
+        text_vertical_align=0.0,
         keyboard_type=ft.KeyboardType.NUMBER, border=ft.NoInputBorder(),
         content_padding=ft.Padding.symmetric(horizontal=2, vertical=0),
         text_style=ft.TextStyle(size=15, weight=ft.FontWeight.W_900),
         input_filter=ft.InputFilter(regex_string=r"^[0-9.]*$"),
         on_change=lambda e: select_custom(), on_focus=lambda e: select_custom(),
     )
-    custom_unit = ft.Text("MB", size=10, weight=ft.FontWeight.W_700)
+    custom_unit = ft.Container(padding=ft.Padding.only(top=0), content=ft.Text("MB", size=10, weight=ft.FontWeight.W_700))
     custom_tile = ft.Container(
         height=36, border_radius=RS, ink=True, animate=ft.Animation(220, ft.AnimationCurve.EASE_OUT_CUBIC),
         padding=ft.Padding.symmetric(horizontal=12), on_click=lambda e: select_custom(focus=True),
         content=ft.Row(vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=4, controls=[
             custom_check, ft.Container(width=4), custom_label, ft.Container(expand=True),
-            custom_field, custom_unit]),
+            ft.Container(padding=ft.Padding.only(top=2), content=custom_field), custom_unit]),
     )
 
     def render_presets():
@@ -505,7 +506,7 @@ async def main(page: ft.Page):
         custom_check.border = ft.Border.all(2, BLACK if sel else GREY)
         custom_check.content.color = WHITE if sel else "#00000000"
         custom_label.color = BLACK if sel else WHITE
-        custom_unit.color = BLACK if sel else GREY
+        custom_unit.content.color = BLACK if sel else GREY
         custom_field.text_style = ft.TextStyle(size=15, weight=ft.FontWeight.W_900, color=BLACK if sel else WHITE)
         custom_field.cursor_color = BLACK if sel else WHITE
 
