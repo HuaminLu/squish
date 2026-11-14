@@ -17,7 +17,7 @@ HOVER = "#1AFFFFFF"
 R, RS = 12, 8
 VERSION = "1.1"
 PRESETS = [5, 8, 10, 20]
-WIN_W, WIN_H = 400, 640
+WIN_W, WIN_H = 400, 700
 SPEEDS = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0]
 
 
@@ -58,6 +58,29 @@ def fmt_dur(s: float) -> str:
     return f"{s // 60}:{s % 60:02d}" if s >= 60 else f"{s}s"
 
 
+def fmt_hms(s: float) -> str:
+    s = max(int(round(s)), 0)
+    return f"{s // 3600:02d}:{s % 3600 // 60:02d}:{s % 60:02d}"
+
+
+def parse_hms(t: str):
+    """'90', '1:30', '0:01:30', '1:30.5' -> seconds; None if not a time."""
+    t = (t or "").strip()
+    if not t:
+        return None
+    parts = t.split(":")
+    if len(parts) > 3:
+        return None
+    try:
+        nums = [float(x) if x else 0.0 for x in parts]
+    except ValueError:
+        return None
+    secs = 0.0
+    for n in nums:
+        secs = secs * 60 + n
+    return secs if secs >= 0 else None
+
+
 async def main(page: ft.Page):
     page.title = "Squish"
     page.bgcolor = BLACK
@@ -81,6 +104,7 @@ async def main(page: ft.Page):
             track_height=8, active_track_color=WHITE, inactive_track_color="#5A5A5A", thumb_color=WHITE,
             overlay_color="#33FFFFFF", active_tick_mark_color="#00000000", inactive_tick_mark_color="#00000000",
             disabled_active_track_color=LINE, disabled_inactive_track_color=LINE, disabled_thumb_color=GREY,
+            disabled_active_tick_mark_color="#00000000", disabled_inactive_tick_mark_color="#00000000",
         ),
     )
 
@@ -127,7 +151,7 @@ async def main(page: ft.Page):
     # ---------------- source card ----------------
     card_body = ft.Container(expand=True, alignment=ft.Alignment.CENTER)
     card = ft.Container(
-        expand=True, bgcolor=PANEL, border_radius=R, border=ft.Border.all(1.5, WHITE),
+        expand=True, min_height=180, bgcolor=PANEL, border_radius=R, border=ft.Border.all(1.5, WHITE),
         clip_behavior=ft.ClipBehavior.ANTI_ALIAS, content=card_body, ink=True,
         animate=ft.Animation(300, ft.AnimationCurve.EASE_OUT_CUBIC),
     )
@@ -171,6 +195,7 @@ async def main(page: ft.Page):
 
     def render_card():
         ph = state["phase"]
+        card_body.padding = ft.Padding.symmetric(vertical=14) if ph in ("idle", "error") else None
         if ph == "idle":
             card_body.content = ft.Column(
                 alignment=ft.MainAxisAlignment.CENTER,
@@ -259,12 +284,31 @@ async def main(page: ft.Page):
 
     # ---------------- edit controls ----------------
     def lbl(t):
-        return ft.Text(t, size=11, color=GREY, weight=ft.FontWeight.W_700, width=40)
+        return ft.Text(t, size=12, color=WHITE, weight=ft.FontWeight.W_700)
 
-    speed_val = ft.Text("1×", size=12, weight=ft.FontWeight.W_800, width=46, text_align=ft.TextAlign.RIGHT)
+    def sub(t):
+        return ft.Text(t, size=11, color=GREY, weight=ft.FontWeight.W_700)
+
+    speed_val = ft.Text("1×", size=13, weight=ft.FontWeight.W_800)
     speed_slider = ft.Slider(min=0, max=len(SPEEDS) - 1, divisions=len(SPEEDS) - 1, value=SPEEDS.index(1.0),
-                             expand=True, padding=ft.Padding.symmetric(horizontal=8))
-    trim_val = ft.Text("", size=11, weight=ft.FontWeight.W_700, width=84, text_align=ft.TextAlign.RIGHT)
+                             expand=True, padding=ft.Padding.symmetric(horizontal=0))
+    def time_field(on_done):
+        return ft.TextField(
+            value="00:00:00", width=76, height=30, text_align=ft.TextAlign.CENTER, dense=True,
+            keyboard_type=ft.KeyboardType.DATETIME, content_padding=ft.Padding.symmetric(horizontal=4, vertical=0),
+            text_style=ft.TextStyle(size=12, weight=ft.FontWeight.W_700, color=WHITE), cursor_color=WHITE,
+            border={ft.ControlState.FOCUSED: ft.OutlineInputBorder(side=ft.BorderSide(1.5, WHITE), border_radius=6),
+                    ft.ControlState.DEFAULT: ft.OutlineInputBorder(side=ft.BorderSide(1, LINE), border_radius=6)},
+            input_filter=ft.InputFilter(regex_string=r"^[0-9:.]*$"),
+            on_submit=on_done, on_blur=on_done, on_focus=select_all,
+        )
+
+    def select_all(e):
+        tf = e.control
+        tf.selection = ft.TextSelection(base_offset=0, extent_offset=len(tf.value or ""))
+        page.update()
+    trim_start_f = time_field(lambda e: on_trim_typed())
+    trim_end_f = time_field(lambda e: on_trim_typed())
     trim_slider = ft.RangeSlider(min=0, max=100, start_value=0, end_value=100, expand=True, round=1)
     crop_chips: dict[str, ft.Container] = {}
 
@@ -286,23 +330,58 @@ async def main(page: ft.Page):
         request_thumb()
 
     def on_speed(e):
+        if state["info"] is None:
+            speed_slider.value = SPEEDS.index(1.0)
+            page.update()
+            return
         state["edit"].speed = SPEEDS[int(round(speed_slider.value))]
         render_edit()
         render_card()
         render_button()
         page.update()
 
-    def on_trim(e):
+    def apply_trim(s: float, en: float):
         i = state["info"]
         if i is None:
             return
-        s, en = float(trim_slider.start_value), float(trim_slider.end_value)
+        s = min(max(s, 0.0), i.duration)
+        en = min(max(en, 0.0), i.duration)
+        if s < 1.0:          # snap to the real ends (the boxes show whole seconds)
+            s = 0.0
+        if en > i.duration - 1.0:
+            en = i.duration
         if en - s < 0.5:
             en = min(s + 0.5, i.duration)
+            s = max(en - 0.5, 0.0)
         state["edit"].start, state["edit"].end = s, (0.0 if en >= i.duration - 0.05 else en)
         render_edit()
         render_card()
         page.update()
+
+    def on_trim(e):
+        if state["info"] is None:
+            render_edit()
+            page.update()
+            return
+        apply_trim(float(trim_slider.start_value), float(trim_slider.end_value))
+
+    def on_trim_typed():
+        i = state["info"]
+        if i is None:
+            return
+        s0, e0 = state["edit"].span(i.duration)
+        s = parse_hms(trim_start_f.value)
+        en = parse_hms(trim_end_f.value)
+        if s is not None and fmt_hms(s) == fmt_hms(s0):
+            s = None   # box text unchanged: keep the exact value
+        if en is not None and fmt_hms(en) == fmt_hms(e0):
+            en = None
+        if s is None and en is None:
+            render_edit()   # normalise e.g. "1:00" -> 00:01:00
+            page.update()
+            return
+        apply_trim(s0 if s is None else s, e0 if en is None else en)
+        request_thumb()
 
     def on_trim_end(e):
         on_trim(e)
@@ -315,18 +394,20 @@ async def main(page: ft.Page):
     def render_edit():
         i, ed = state["info"], state["edit"]
         enabled = i is not None and state["phase"] != "working"
-        speed_slider.disabled = trim_slider.disabled = not enabled
+        # Sliders stay enabled-looking; handlers ignore input until a video is loaded.
+        speed_slider.disabled = trim_slider.disabled = state["phase"] == "working"
+        trim_start_f.disabled = trim_end_f.disabled = not enabled
         speed_slider.value = SPEEDS.index(ed.speed) if ed.speed in SPEEDS else SPEEDS.index(1.0)
         speed_val.value = f"{ed.speed:g}×"
         if i is not None:
             trim_slider.max = max(i.duration, 1)
             s, e = ed.span(i.duration)
             trim_slider.start_value, trim_slider.end_value = s, e
-            trim_val.value = f"{core.fmt_time(s)} – {core.fmt_time(e)}"
             trim_slider.divisions = max(int(i.duration * 2), 1)
+            trim_start_f.value, trim_end_f.value = fmt_hms(s), fmt_hms(e)
         else:
             trim_slider.max, trim_slider.start_value, trim_slider.end_value = 100, 0, 100
-            trim_val.value = ""
+            trim_start_f.value, trim_end_f.value = "00:00:00", "00:00:00"
         for a, c in crop_chips.items():
             sel = (ed.crop == a)
             c.bgcolor = WHITE if sel else BLACK
@@ -360,9 +441,17 @@ async def main(page: ft.Page):
         page.run_task(run)
 
     edit_block = ft.Column(spacing=0, controls=[
-        ft.Row(spacing=4, controls=[lbl("Speed"), speed_slider, speed_val], height=36),
-        ft.Row(spacing=4, controls=[lbl("Trim"), trim_slider, trim_val], height=36),
-        ft.Row(spacing=6, controls=[lbl("Crop")] + [crop_chip(a) for a in core.CROPS], height=28),
+        ft.Row(controls=[lbl("Speed"), ft.Container(expand=True), speed_val], height=22),
+        ft.Container(content=speed_slider, height=30, padding=ft.Padding.symmetric(horizontal=2)),
+        ft.Container(height=4),
+        ft.Row(spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER, height=32, controls=[
+            lbl("Trim"), ft.Container(expand=True),
+            ft.Container(padding=ft.Padding.only(bottom=2), content=sub("Start")), trim_start_f,
+            ft.Container(width=6),
+            ft.Container(padding=ft.Padding.only(bottom=2), content=sub("End")), trim_end_f]),
+        ft.Container(content=trim_slider, height=30, padding=ft.Padding.symmetric(horizontal=2)),
+        ft.Container(height=4),
+        ft.Row(spacing=6, controls=[lbl("Crop"), ft.Container(width=4)] + [crop_chip(a) for a in core.CROPS], height=28),
     ])
 
     # ---------------- presets ----------------
@@ -386,18 +475,20 @@ async def main(page: ft.Page):
                                 animate=ft.Animation(220), content=ft.Icon(ft.Icons.CHECK_ROUNDED, size=12))
     custom_label = ft.Text("Custom", size=13, weight=ft.FontWeight.W_700)
     custom_field = ft.TextField(
-        value=str(st.get("custom_value", "25")), width=60, text_align=ft.TextAlign.RIGHT,
-        keyboard_type=ft.KeyboardType.NUMBER, border=ft.NoInputBorder(), content_padding=0,
+        value=str(st.get("custom_value", "25")), width=56, height=30, text_align=ft.TextAlign.RIGHT, dense=True,
+        keyboard_type=ft.KeyboardType.NUMBER, border=ft.NoInputBorder(),
+        content_padding=ft.Padding.symmetric(horizontal=2, vertical=0),
         text_style=ft.TextStyle(size=15, weight=ft.FontWeight.W_900),
         input_filter=ft.InputFilter(regex_string=r"^[0-9.]*$"),
         on_change=lambda e: select_custom(), on_focus=lambda e: select_custom(),
     )
     custom_unit = ft.Text("MB", size=10, weight=ft.FontWeight.W_700)
     custom_tile = ft.Container(
-        height=34, border_radius=RS, ink=True, animate=ft.Animation(220, ft.AnimationCurve.EASE_OUT_CUBIC),
+        height=36, border_radius=RS, ink=True, animate=ft.Animation(220, ft.AnimationCurve.EASE_OUT_CUBIC),
         padding=ft.Padding.symmetric(horizontal=12), on_click=lambda e: select_custom(focus=True),
-        content=ft.Row(controls=[custom_check, ft.Container(width=4), custom_label,
-                                 ft.Container(expand=True), custom_field, custom_unit]),
+        content=ft.Row(vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=4, controls=[
+            custom_check, ft.Container(width=4), custom_label, ft.Container(expand=True),
+            custom_field, custom_unit]),
     )
 
     def render_presets():
@@ -609,11 +700,12 @@ async def main(page: ft.Page):
             go_btn,
         ]))
     shots_mode = "--shots" in sys.argv
-    root = ft.Screenshot(content=ft.Container(
-        bgcolor=BLACK, expand=not shots_mode,
-        width=WIN_W if shots_mode else None, height=WIN_H if shots_mode else None,
-        content=ft.Column([title_bar, body], spacing=0, expand=True)))
-    page.add(root)
+    content = ft.Column([title_bar, body], spacing=0, expand=True)
+    if shots_mode:
+        root = ft.Screenshot(content=ft.Container(bgcolor=BLACK, width=WIN_W, height=WIN_H, content=content))
+        page.add(root)
+    else:
+        page.add(content)
 
     # Preload a file given on the command line (also lets "Open with" work).
     args = [a for a in sys.argv[1:] if not a.startswith("--")]

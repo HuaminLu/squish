@@ -76,6 +76,10 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
   String? error;
   Edit edit = Edit();
   int thumbReq = 0;
+  final trimStartCtl = TextEditingController(text: '00:00:00');
+  final trimEndCtl = TextEditingController(text: '00:00:00');
+  final trimStartFocus = FocusNode();
+  final trimEndFocus = FocusNode();
   late final AnimationController pulse =
       AnimationController(vsync: this, duration: const Duration(seconds: 2))
         ..repeat(reverse: true);
@@ -87,6 +91,20 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
     customFocus.addListener(() {
       if (customFocus.hasFocus) setState(() => custom = true);
     });
+    trimStartFocus.addListener(() {
+      if (trimStartFocus.hasFocus) {
+        _selectAll(trimStartCtl);
+      } else {
+        _applyTypedTrim();
+      }
+    });
+    trimEndFocus.addListener(() {
+      if (trimEndFocus.hasFocus) {
+        _selectAll(trimEndCtl);
+      } else {
+        _applyTypedTrim();
+      }
+    });
   }
 
   @override
@@ -94,6 +112,10 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
     pulse.dispose();
     customCtl.dispose();
     customFocus.dispose();
+    trimStartCtl.dispose();
+    trimEndCtl.dispose();
+    trimStartFocus.dispose();
+    trimEndFocus.dispose();
     super.dispose();
   }
 
@@ -164,6 +186,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
         info = i;
         thumb = t;
       });
+      _syncTrimFields();
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -171,6 +194,79 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
         phase = Phase.error;
       });
     }
+  }
+
+  void _selectAll(TextEditingController c) {
+    c.selection = TextSelection(baseOffset: 0, extentOffset: c.text.length);
+  }
+
+  static String fmtHms(double s) {
+    final t = s.round().clamp(0, 1 << 30);
+    String two(int v) => v.toString().padLeft(2, '0');
+    return '${two(t ~/ 3600)}:${two(t % 3600 ~/ 60)}:${two(t % 60)}';
+  }
+
+  /// '90', '1:30', '0:01:30', '1:30.5' -> seconds; null if not a time.
+  static double? parseHms(String t) {
+    t = t.trim();
+    if (t.isEmpty) return null;
+    final parts = t.split(':');
+    if (parts.length > 3) return null;
+    var secs = 0.0;
+    for (final p in parts) {
+      final n = p.isEmpty ? 0.0 : double.tryParse(p);
+      if (n == null) return null;
+      secs = secs * 60 + n;
+    }
+    return secs < 0 ? null : secs;
+  }
+
+  void _syncTrimFields() {
+    final i = info;
+    if (i == null) {
+      trimStartCtl.text = '00:00:00';
+      trimEndCtl.text = '00:00:00';
+      return;
+    }
+    final (s, e) = edit.span(i.duration);
+    final ts = fmtHms(s), te = fmtHms(e);
+    if (trimStartCtl.text != ts) trimStartCtl.text = ts;
+    if (trimEndCtl.text != te) trimEndCtl.text = te;
+  }
+
+  void _applyTrim(double s, double e) {
+    final i = info;
+    if (i == null) return;
+    final d = i.duration;
+    s = s.clamp(0.0, d);
+    e = e.clamp(0.0, d);
+    if (s < 1.0) s = 0.0; // snap to the real ends (boxes show whole seconds)
+    if (e > d - 1.0) e = d;
+    if (e - s < 0.5) {
+      e = (s + 0.5).clamp(0.0, d);
+      s = (e - 0.5).clamp(0.0, d);
+    }
+    setState(() {
+      edit.start = s;
+      edit.end = e >= d - 0.05 ? 0 : e;
+    });
+    _syncTrimFields();
+  }
+
+  void _applyTypedTrim() {
+    final i = info;
+    if (i == null) return;
+    final (s0, e0) = edit.span(i.duration);
+    var s = parseHms(trimStartCtl.text);
+    var e = parseHms(trimEndCtl.text);
+    if (s != null && fmtHms(s) == fmtHms(s0)) s = null; // unchanged text
+    if (e != null && fmtHms(e) == fmtHms(e0)) e = null;
+    if (s == null && e == null) {
+      _syncTrimFields(); // normalise e.g. "1:00" -> 00:01:00
+      return;
+    }
+    _applyTrim(s ?? s0, e ?? e0);
+    _requestThumb();
   }
 
   /// Regenerate the preview for the current crop / trim start (debounced).
@@ -369,7 +465,9 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
   Widget _emptyCard() {
     return Center(
       key: const ValueKey('empty'),
-      child: Column(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 16),
+        child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           ScaleTransition(
@@ -384,6 +482,7 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
           const Text('Any size · any format',
               style: TextStyle(color: _grey, fontSize: 15)),
         ],
+      ),
       ),
     );
   }
@@ -878,12 +977,9 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
     return '${parts.join(' · ')} → ${_fmtDur(edit.outDuration(i.duration))}';
   }
 
-  Widget _editLabel(String t) => SizedBox(
-        width: 48,
-        child: Text(t,
-            style: const TextStyle(
-                color: _grey, fontSize: 12, fontWeight: FontWeight.w700)),
-      );
+  Widget _editLabel(String t) => Text(t,
+      style: const TextStyle(
+          color: _white, fontSize: 14, fontWeight: FontWeight.w700));
 
   Widget _editBlock() {
     final i = info;
@@ -901,78 +997,87 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
       rangeThumbShape: const RoundRangeSliderThumbShape(enabledThumbRadius: 12),
       rangeTrackShape: const RoundedRectRangeSliderTrackShape(),
       trackShape: const RoundedRectSliderTrackShape(),
+      padding: EdgeInsets.zero,
       activeTickMarkColor: Colors.transparent,
       inactiveTickMarkColor: Colors.transparent,
-      disabledActiveTrackColor: _line,
-      disabledInactiveTrackColor: _line,
-      disabledThumbColor: _grey,
+      disabledActiveTrackColor: _white,
+      disabledInactiveTrackColor: const Color(0xFF5A5A5A),
+      disabledThumbColor: _white,
+      disabledActiveTickMarkColor: Colors.transparent,
+      disabledInactiveTickMarkColor: Colors.transparent,
     );
     return SliderTheme(
       data: theme,
       child: Column(
         children: [
           SizedBox(
-            height: 40,
+            height: 24,
             child: Row(
               children: [
                 _editLabel('Speed'),
-                Expanded(
-                  child: Slider(
-                    min: 0,
-                    max: (kSpeeds.length - 1).toDouble(),
-                    divisions: kSpeeds.length - 1,
-                    value: kSpeeds.indexOf(edit.speed).clamp(0, kSpeeds.length - 1).toDouble(),
-                    onChanged: enabled
-                        ? (v) => setState(() => edit.speed = kSpeeds[v.round()])
-                        : null,
-                  ),
-                ),
-                SizedBox(
-                  width: 44,
-                  child: Text('${Edit.g(edit.speed)}×',
-                      textAlign: TextAlign.right,
-                      style: const TextStyle(
-                          fontSize: 14, fontWeight: FontWeight.w800)),
-                ),
+                const Spacer(),
+                Text('${Edit.g(edit.speed)}×',
+                    style: const TextStyle(
+                        fontSize: 15, fontWeight: FontWeight.w800)),
               ],
             ),
           ),
           SizedBox(
-            height: 40,
+            height: 36,
+            child: Slider(
+              min: 0,
+              max: (kSpeeds.length - 1).toDouble(),
+              divisions: kSpeeds.length - 1,
+              value: kSpeeds.indexOf(edit.speed).clamp(0, kSpeeds.length - 1).toDouble(),
+              onChanged: (v) {
+                if (!enabled) return;
+                setState(() => edit.speed = kSpeeds[v.round()]);
+              },
+            ),
+          ),
+          const SizedBox(height: 6),
+          SizedBox(
+            height: 36,
             child: Row(
               children: [
                 _editLabel('Trim'),
-                Expanded(
-                  child: RangeSlider(
-                    min: 0,
-                    max: dur,
-                    values: RangeValues(s, e),
-                    onChanged: enabled
-                        ? (v) => setState(() {
-                              var a = v.start, b = v.end;
-                              if (b - a < 0.5) b = (a + 0.5).clamp(0.0, dur);
-                              edit.start = a;
-                              edit.end = b >= dur - 0.05 ? 0 : b;
-                            })
-                        : null,
-                    onChangeEnd: enabled ? (_) => _requestThumb() : null,
-                  ),
-                ),
-                SizedBox(
-                  width: 92,
-                  child: Text(i == null ? '' : '${fmtTime(s)} – ${fmtTime(e)}',
-                      textAlign: TextAlign.right,
-                      style: const TextStyle(
-                          fontSize: 12, fontWeight: FontWeight.w700)),
-                ),
+                const Spacer(),
+                const Text('Start',
+                    style: TextStyle(
+                        color: _grey, fontSize: 12, fontWeight: FontWeight.w700)),
+                const SizedBox(width: 6),
+                _timeField(trimStartCtl, trimStartFocus, enabled),
+                const SizedBox(width: 10),
+                const Text('End',
+                    style: TextStyle(
+                        color: _grey, fontSize: 12, fontWeight: FontWeight.w700)),
+                const SizedBox(width: 6),
+                _timeField(trimEndCtl, trimEndFocus, enabled),
               ],
             ),
           ),
           SizedBox(
-            height: 30,
+            height: 36,
+            child: RangeSlider(
+              min: 0,
+              max: dur,
+              values: RangeValues(s, e),
+              onChanged: (v) {
+                if (!enabled) return;
+                _applyTrim(v.start, v.end);
+              },
+              onChangeEnd: (_) {
+                if (enabled) _requestThumb();
+              },
+            ),
+          ),
+          const SizedBox(height: 6),
+          SizedBox(
+            height: 32,
             child: Row(
               children: [
                 _editLabel('Crop'),
+                const SizedBox(width: 6),
                 for (final a in kCrops) ...[
                   _cropChip(a, enabled),
                   const SizedBox(width: 6),
@@ -981,6 +1086,39 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _timeField(TextEditingController c, FocusNode f, bool enabled) {
+    return SizedBox(
+      width: 78,
+      height: 34,
+      child: TextField(
+        controller: c,
+        focusNode: f,
+        enabled: enabled,
+        keyboardType: TextInputType.datetime,
+        inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9:.]'))],
+        textAlign: TextAlign.center,
+        textAlignVertical: TextAlignVertical.center,
+        onSubmitted: (_) => _applyTypedTrim(),
+        style: const TextStyle(
+            fontSize: 13, fontWeight: FontWeight.w700, color: _white),
+        cursorColor: _white,
+        decoration: InputDecoration(
+          isDense: true,
+          contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+          enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(6),
+              borderSide: const BorderSide(color: _line)),
+          focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(6),
+              borderSide: const BorderSide(color: _white, width: 1.5)),
+          disabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(6),
+              borderSide: const BorderSide(color: _line)),
+        ),
       ),
     );
   }

@@ -22,8 +22,9 @@ lands in your Downloads folder with `-10mb` (or whatever you chose) added to the
 Quick run-through:
 
 1. Click the big box to choose a video (any size, any format).
-2. Optional **Edit**: speed (0.25x to 4x, audio pitch-corrected), trim (drag the two handles), crop
-   (16:9, 1:1, 9:16, 4:3, centred). The preview updates and the size math uses the edited length.
+2. Optional **Edit**: speed (0.25x to 4x, audio pitch-corrected), trim (drag the two handles or type
+   start/end times like `1:30` or `00:01:30`), crop (16:9, 1:1, 9:16, 4:3, centred). The preview updates and
+   the size math uses the edited length.
 3. Pick 5 / 8 / 10 / 20 MB, or type a custom number.
 4. Optionally change **Save to** (defaults to your Downloads; the **Use Downloads** button brings it back).
 5. **Squish It**. A 2-minute 1080p phone video takes about 15 s on a laptop, about 100 s on a phone.
